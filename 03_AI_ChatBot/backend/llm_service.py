@@ -33,4 +33,4 @@ def chat_with_llm_stream(prompt: str):
             )
 
             if content:
-                yield content
+                yield f"data: {content}\n\n"

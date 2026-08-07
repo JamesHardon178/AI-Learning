@@ -1,22 +1,67 @@
-# 该文件夹的主要功能是处理与聊天相关的API请求。它使用FastAPI框架来创建一个简单的Web服务，接收用户的聊天请求，并返回生成的回答。
+# 该文件的主要功能：
+# 处理聊天API请求。
+# 使用FastAPI接收用户消息，
+# 构建Prompt，调用LLM流式生成，
+# 同时保存聊天记录。
+
+
 from fastapi import FastAPI
-from schemas import ChatRequest, ChatResponse
+from fastapi.responses import StreamingResponse
+
+from schemas import ChatRequest
 from prompt_service import build_prompt
-from llm_service import chat_with_llm
+from llm_service import chat_with_llm_stream
+from memory_service import get_history, save_message
 
 
 app = FastAPI()
 
-@app.post("/chat", response_model=ChatResponse)
+
+@app.post("/chat")
 def chat(request: ChatRequest):
 
-    prompt = build_prompt(
-        request.history,
+    # 1. 获取历史聊天记录
+    history = get_history(request.session_id)
+
+    # 2. 保存用户消息
+    save_message(
+        request.session_id,
+        "user",
         request.message
     )
 
-    answer = chat_with_llm(prompt)
+    # 3. 构建Prompt
+    prompt = build_prompt(
+        history,
+        request.message
+    )
 
-    return ChatResponse(
-        answer=answer
+
+    # 4. 包装LLM流式输出
+    def generate_response():
+
+        full_answer = ""
+
+        # 逐段获取模型输出
+        for chunk in chat_with_llm_stream(prompt):
+
+            # 拼接完整答案
+            full_answer += chunk
+
+            # 立即发送给客户端
+            yield chunk
+
+
+        # 5. 模型结束后保存AI回复
+        save_message(
+            request.session_id,
+            "assistant",
+            full_answer
+        )
+
+
+    # 6. 返回流式响应
+    return StreamingResponse(
+        generate_response(),
+        media_type="text/event-stream"
     )

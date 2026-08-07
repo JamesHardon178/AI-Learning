@@ -9,10 +9,8 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    user_id: str
-    message: str
-    history: list[Message] = Field(default_factory=list)
-
+    session_id: str
+    message: str 
 
 class ChatResponse(BaseModel):
     answer: str

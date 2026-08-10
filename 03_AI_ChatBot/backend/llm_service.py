@@ -12,25 +12,25 @@ def chat_with_llm_stream(prompt: str):
         "stream": True
     }
 
-    response = requests.post(
+    with requests.post(
         url,
         json=payload,
         stream=True,
-        timeout=60
-    )
+        timeout=(10, 300)
+    ) as response:
+        response.raise_for_status()
 
-    for chunk in response.iter_lines():
+        # requests defaults to a 512-byte read buffer, which can hold back
+        # short Ollama tokens until the model has nearly finished.
+        for chunk in response.iter_lines(
+            chunk_size=1,
+            decode_unicode=True
+        ):
+            if not chunk:
+                continue
 
-        if chunk:
-
-            data = json.loads(
-                chunk.decode("utf-8")
-            )
-
-            content = data.get(
-                "response",
-                ""
-            )
+            data = json.loads(chunk)
+            content = data.get("response", "")
 
             if content:
-                yield f"data: {content}\n\n"
+                yield content

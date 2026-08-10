@@ -1,57 +1,35 @@
-"""
-memory_service.py
+"""Redis-backed chat history storage."""
 
-作用：
-负责管理聊天历史记录。
+import os
+from typing import Literal
 
-当前版本：
-使用 Python dict 模拟存储。
-
-企业版本：
-Redis + MySQL
-"""
+import redis
 
 from schemas import Message
-# 模拟数据库/Redis
-memory_store = {}
 
 
-def save_message(session_id, role, content):
-    """
-    保存一条聊天消息
-
-    参数:
-        session_id:
-            会话ID，用于区分不同聊天
-
-        role:
-            消息角色
-            user / assistant / system
-
-        content:
-            消息内容
-    """
-
-    # 如果当前session不存在，则创建
-    if session_id not in memory_store:
-        memory_store[session_id] = []
-
-    # 添加消息
-    memory_store[session_id].append(
-        Message(role=role, content=content)
-    )
+redis_client = redis.Redis.from_url(
+    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    decode_responses=True,
+)
+key_prefix = os.getenv("REDIS_KEY_PREFIX", "chat:history:")
 
 
-def get_history(session_id):
-    """
-    获取指定session的历史消息
+def _history_key(session_id: str) -> str:
+    return f"{key_prefix}{session_id}"
 
-    参数:
-        session_id:
-            会话ID
 
-    返回:
-        当前会话所有历史消息
-    """
+def save_message(
+    session_id: str,
+    role: Literal["system", "user", "assistant"],
+    content: str,
+) -> None:
+    """Append one validated chat message to the session history."""
+    message = Message(role=role, content=content)
+    redis_client.rpush(_history_key(session_id), message.model_dump_json())
 
-    return memory_store.get(session_id, [])
+
+def get_history(session_id: str) -> list[Message]:
+    """Return all chat messages stored for the session."""
+    raw_messages = redis_client.lrange(_history_key(session_id), 0, -1)
+    return [Message.model_validate_json(raw_message) for raw_message in raw_messages]

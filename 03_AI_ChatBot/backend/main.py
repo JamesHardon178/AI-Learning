@@ -4,7 +4,6 @@
 # 构建Prompt，调用LLM流式生成，
 # 同时保存聊天记录。
 
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -15,10 +14,18 @@ from llm_service import chat_with_llm_stream
 from memory_service import get_history, save_message
 
 
+def format_sse_event(content: str) -> str:
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join(f"data: {line}\n" for line in normalized.split("\n")) + "\n"
+
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,26 +56,34 @@ def chat(request: ChatRequest):
 
         full_answer = ""
 
-        # 逐段获取模型输出
-        for chunk in chat_with_llm_stream(prompt):
+        try:
+            # 逐段获取模型输出
+            for chunk in chat_with_llm_stream(prompt):
 
-            # 拼接完整答案
-            full_answer += chunk
+                # 拼接完整答案
+                full_answer += chunk
 
-            # 立即发送给客户端
-            yield chunk
-
-
-        # 5. 模型结束后保存AI回复
-        save_message(
-            request.session_id,
-            "assistant",
-            full_answer
-        )
+                # 立即发送给客户端
+                yield format_sse_event(chunk)
+        except Exception as error:
+            print(f"Streaming response failed: {error}")
+            yield format_sse_event("抱歉，生成过程中连接中断，请稍后重试。")
+        else:
+            # 5. 模型结束后保存AI回复
+            save_message(
+                request.session_id,
+                "assistant",
+                full_answer
+            )
 
 
     # 6. 返回流式响应
     return StreamingResponse(
         generate_response(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )

@@ -1,6 +1,9 @@
 <script setup>
-import { computed, nextTick, ref } from "vue"
+import { computed, nextTick, onMounted, ref } from "vue"
+import { useRouter } from "vue-router"
+import { API_BASE_URL, clearToken, getToken } from "../utils/auth"
 
+const router = useRouter()
 const messages = ref([])
 const input = ref("")
 const isSending = ref(false)
@@ -16,6 +19,14 @@ async function scrollToBottom() {
   }
 }
 
+function redirectToLogin() {
+  clearToken()
+  return router.replace({
+    name: "login",
+    query: { redirect: "/chat" }
+  })
+}
+
 function decodeSsePayload(payload) {
   let content = payload
 
@@ -26,11 +37,9 @@ function decodeSsePayload(payload) {
 
     try {
       const decoded = JSON.parse(content)
-
       if (typeof decoded !== "string") {
         break
       }
-
       content = decoded
     } catch {
       break
@@ -60,6 +69,12 @@ function appendSseEvent(event, assistantMessage) {
 
 async function sendMessage() {
   const message = input.value.trim()
+  const token = getToken()
+
+  if (!token) {
+    await redirectToLogin()
+    return
+  }
 
   if (!message || isSending.value) {
     return
@@ -71,26 +86,29 @@ async function sendMessage() {
     streaming: true
   }
 
-  messages.value.push({
-    role: "user",
-    content: message
-  })
+  messages.value.push({ role: "user", content: message })
   messages.value.push(assistantMessage)
   input.value = ""
   isSending.value = true
   await scrollToBottom()
 
   try {
-    const response = await fetch("http://127.0.0.1:8000/chat", {
+    const response = await fetch(`${API_BASE_URL}/chat`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
       },
       body: JSON.stringify({
         session_id: "001",
         message
       })
     })
+
+    if (response.status === 401) {
+      await redirectToLogin()
+      return
+    }
 
     if (!response.ok || !response.body) {
       throw new Error(`Request failed with status ${response.status}`)
@@ -134,6 +152,12 @@ async function sendMessage() {
     await scrollToBottom()
   }
 }
+
+onMounted(() => {
+  if (!getToken()) {
+    redirectToLogin()
+  }
+})
 </script>
 
 <template>
@@ -206,8 +230,8 @@ async function sendMessage() {
           @keydown.enter.exact.prevent="sendMessage"
         ></textarea>
         <button type="submit" :disabled="!canSend" :aria-label="isSending ? '正在生成' : '发送消息'">
-          <span>{{ isSending ? "生成中" : "发送" }}</span>
-          <span class="send-icon" aria-hidden="true">↑</span>
+          <span>{{ isSending ? "生成中..." : "发送" }}</span>
+          <span class="send-icon" aria-hidden="true">↗</span>
         </button>
       </form>
     </section>

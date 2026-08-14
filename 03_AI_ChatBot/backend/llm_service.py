@@ -7,10 +7,13 @@ def chat_with_llm_stream(prompt: str):
     url = "http://127.0.0.1:11434/api/generate"
 
     payload = {
-        "model": "qwen2.5:0.5b",
-        "prompt": prompt,
-        "stream": True
+    "model": "qwen2.5:0.5b",
+    "prompt": prompt,
+    "stream": True,
+    "options": {
+        "temperature": 0
     }
+}
 
     with requests.post(
         url,

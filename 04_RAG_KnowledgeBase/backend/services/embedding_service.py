@@ -15,12 +15,22 @@ def embed_text(text: str) -> list[float]:
         "input": text
     }
 
-    response = requests.post(
-        OLLAMA_URL,
-        json=payload
-    )
-
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json=payload,
+            timeout=10
+        )
+        response.raise_for_status()
+    except requests.exceptions.ConnectionError as e:
+        print(f"Connection error: {e}")
+        raise RuntimeError("无法连接到 Ollama API。请检查服务是否运行。")
+    except requests.exceptions.Timeout as e:
+        print(f"Timeout error: {e}")
+        raise RuntimeError("请求 Ollama API 超时。请检查服务是否运行。")
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP error: {e}")
+        raise RuntimeError("请求 Ollama API 时发生 HTTP 错误。")
 
     data = response.json()
 

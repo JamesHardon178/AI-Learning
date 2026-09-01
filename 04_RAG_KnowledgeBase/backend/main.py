@@ -1,6 +1,8 @@
 ﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+# 导入HttpException类
+from fastapi import HTTPException
+import logging
 from services.rag_service import rag_query
 from schemas.rag_schema import (
     RAGQueryRequest,
@@ -21,6 +23,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 @app.get("/")
 def root():
@@ -32,6 +42,8 @@ def root():
     response_model=RAGQueryResponse
 )
 def rag_query_api(request: RAGQueryRequest):
-    result = rag_query(request.query)
-
+    try:
+        result=rag_query(request.query)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return result

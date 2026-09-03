@@ -14,3 +14,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local AI models
+.tmp_models/
+
+# RAG local data
+data/chroma/

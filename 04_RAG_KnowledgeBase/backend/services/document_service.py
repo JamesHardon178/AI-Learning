@@ -22,33 +22,54 @@ DROP_EXACT_LINES = {"目录", "目录 ", "目 录"}
 
 def detect_page_headers(
     lines: list[str],
+    page_count: int,
     min_count: int = 8,
-    min_len: int = 6
+    min_len: int = 6,
+    max_ratio: float = 1.5
 ) -> set[str]:
     """
     自动识别页眉行。
 
-    原理：页眉在每一页都重复出现，出现次数接近 PDF 页数。
-    所以统计每一行的出现次数，把「出现 >= min_count 且长度 >= min_len」
-    的行判定为页眉。
+    原理：页眉在每一页的相同位置重复出现，出现次数接近 PDF 页数。
+    所以统计每一行的出现次数，把「出现次数 ≈ 页数」的行判定为页眉。
+
+    两个关键约束：
+
+    1. 出现次数不能太少（>= min(8, 页数)）：
+       太少说明不是「每页都有」，不具备页眉特征。
+
+    2. 出现次数不能太多（<= 页数 * 1.5）：
+       这是防误伤的护栏。如果某行出现次数远大于页数
+       （比如每页出现 30 次），说明它是正文里的重复内容
+       （如产品宣传语、测试填充文本），不是页眉。
+       页眉每页只出现 1 次，最多偶尔跳页，不会超过 1.5 倍页数。
 
     为什么要求 min_len：
-    「字段」「说明」「操作」这类短行是表格列头，也会重复出现 10 次左右，
+    「字段」「说明」「操作」这类短行是表格列头，也会重复出现，
     但它们是正文内容，不能删。页眉一般是一句完整的长标题。
     """
 
     counter = Counter(line.strip() for line in lines if line.strip())
 
+    # 出现次数的合理下限：页眉应该「几乎每页都有」，
+    # 所以下限取 min(8, 页数)，页数很少时放宽到页数本身。
+    lower_bound = min(min_count, max(3, page_count))
+
+    # 出现次数的合理上限：页眉每页最多出现 1 次，
+    # 超过 页数 * 1.5 说明是正文重复，不是页眉。
+    upper_bound = page_count * max_ratio
+
     headers = {
         line
         for line, count in counter.items()
-        if count >= min_count and len(line) >= min_len
+        if lower_bound <= count <= upper_bound
+        and len(line) >= min_len
     }
 
     return headers
 
 
-def clean_lines(lines: list[str]) -> list[str]:
+def clean_lines(lines: list[str], page_count: int = 1) -> list[str]:
     """
     清洗 PDF 提取出的原始文本行，去掉四类噪声：
 
@@ -62,7 +83,7 @@ def clean_lines(lines: list[str]) -> list[str]:
     只有逐行判断才能精确剔除，且不影响正文。
     """
 
-    headers = detect_page_headers(lines)
+    headers = detect_page_headers(lines, page_count=page_count)
 
     cleaned = []
 
@@ -136,6 +157,14 @@ def get_section_title(chunk: str) -> str:
     return ""
 
 
+def is_faq_question(line: str) -> bool:
+    """
+    判断一行是否为 FAQ 问题，例如：
+    Q1：忘记写日报怎么办？
+    Q2：AI 报告生成需要多久？失败了怎么办？
+    """
+    return bool(re.match(r"^Q\d+[：:]", line.strip()))
+
 # =========================
 # 3. 从 PDF 提取文本（原始 + 清洗后）
 # =========================
@@ -151,6 +180,7 @@ def extract_text_from_pdf(file_path: str, clean: bool = True) -> str:
     document = fitz.open(file_path)
 
     texts = []
+    page_count = len(document)
 
     for page in document:
         text = page.get_text()
@@ -164,7 +194,7 @@ def extract_text_from_pdf(file_path: str, clean: bool = True) -> str:
         return raw
 
     # 先按行拆开，逐行清洗，再拼回去
-    cleaned_lines = clean_lines(raw.splitlines())
+    cleaned_lines = clean_lines(raw.splitlines(), page_count=page_count)
 
     return "\n".join(cleaned_lines)
 
@@ -208,6 +238,19 @@ def chunk_text(
 
         # 跳过空行
         if not line:
+            continue
+        if is_faq_question(line):
+
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            if chapter_prefix:
+                current_chunk = chapter_prefix + "\n" + line
+                chapter_prefix = ""
+            else:
+                current_chunk = line
+
+            current_title = line
+
             continue
 
         # =========================
@@ -312,7 +355,7 @@ def prepare_document(file_path: str) -> list[str]:
 if __name__ == "__main__":
 
     # PDF 路径
-    file_path = "../data/documents/项目日志管理系统-产品手册.pdf"
+    file_path = "data/documents/项目日志管理系统-产品手册.pdf"
 
     # =========================
     # 对比：清洗前 vs 清洗后

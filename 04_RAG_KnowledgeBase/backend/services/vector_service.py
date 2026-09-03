@@ -74,3 +74,11 @@ def search(
     )
 
     return result
+
+def delete_document_by_source(filename: str):
+    """
+    根据 source 元数据删除文档的所有 chunk
+    """
+    collection.delete(
+        where={"source": filename}
+    )

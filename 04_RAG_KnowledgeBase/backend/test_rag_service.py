@@ -1,15 +1,12 @@
-from services.rag_service import rag_query
+from services.rag_service import retrieve_documents
 
+query = "怎么查看项目操作记录？"
 
-query = "我的日报在哪里查看？"
+documents, metadatas = retrieve_documents(query)
 
-result = rag_query(query)
+print("\n===== 检索结果 =====")
 
-print("\n===== AI回答 =====")
-print(result["answer"])
-
-print("\n===== 来源 =====")
-
-for metadata in result["metadatas"]:
-    print(f"📄 {metadata.get('source')}")
+for document, metadata in zip(documents, metadatas):
+    print(f"\n📄 {metadata.get('source')}")
     print(f"📌 Chunk {metadata.get('chunk_index')}")
+    print(f"内容：{document}")

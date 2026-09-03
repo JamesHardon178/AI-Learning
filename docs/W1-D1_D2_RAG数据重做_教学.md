@@ -15,12 +15,20 @@
 | 库外问题幻觉防护 | 有效 | 仍然有效（阈值重新标定过） |
 | 代码与数据一致性 | ❌ 代码改了没重新入库 | ✅ 有入库脚本，可重复执行 |
 
-改动的文件（共 3 个 + 新增 1 个）：
+改动的文件（D1/D2 共 3 个 + 新增 1 个，D3 追加 3 个）：
 
+**D1/D2（数据重做）**
 1. `services/document_service.py` —— 新增噪声清洗 + 章标题合并
 2. `services/vector_service.py` —— 新增 `reset_collection()`，id 加文档前缀
 3. `services/rag_service.py` —— 阈值 0.75 → 1.0（数据标定），删调试 print
 4. `ingest.py`（新增）—— 一键「清库 → 切分 → 向量化 → 入库 → 自检」
+
+**D3（上传接口 + top_k 作业，2026-09-01）**
+5. `main.py` —— 修复 query 路由被 upload 吃掉的 bug，新增上传/列表/删除接口
+6. `services/document_registry_service.py`（新增）—— 文档注册表（JSON 持久化）
+7. `services/document_service.py` —— 页眉检测加 page_count 上下限（防误伤重复正文）
+8. `services/rag_service.py` —— top_k 1 → 3，阈值按新库重新标定 0.95
+9. `requirements.txt` —— 从 0 字节补齐（含 python-multipart）
 
 ---
 
@@ -220,18 +228,154 @@ python ingest.py
 
 ---
 
-## 8. 下一课作业（W1-D5 预习）：top_k=1 → 3
+## 8. 下一课作业（W1-D5）：top_k=1 → 3 —— 已完成 ✅
 
 **遗留问题**：问"忘记写日报怎么办？"，top-1 是 3.1（补录操作步骤），
 但"3 天内补录、超过 3 天联系管理员"在第七章 FAQ chunk 里。
 top_k=1 拿不到它，答案不完整。
 
-**作业**（自己动手，卡住再问）：
-1. `rag_service.py` 里 `search(query_embedding, top_k=1)` 改成 3；
-2. `build_context` 已经支持多 chunk 拼接，观察 context 变化；
-3. 思考：阈值过滤后剩下的 chunk 可能是 0/1/2/3 个，`build_prompt`
-   的"知识库中没有相关信息"兜底在 0 个时还成立吗？
-4. 思考：3 个 chunk 全给 LLM，答案会不会被不相关 chunk 干扰？
-   （这就是 precision vs recall 的 trade-off，面试必问）
+### 8.1 作业答案（2026-09-01 实测验证）
 
-改完跑第 6 节的自查清单验证。
+`rag_service.py` 中：
+```python
+TOP_K = 3   # 原来写死 top_k=1
+result = search(query_embedding=query_embedding, top_k=TOP_K)
+```
+
+改造后实测：
+
+| 场景 | top_k=1（改前） | top_k=3（改后） |
+|---|---|---|
+| 忘记写日报怎么办？ | 只命中 3.1，缺 FAQ 补录信息 | 命中 3.1 + **第七章常见问题** + 第三章，答案完整 |
+| 系统有哪些角色？ | 曾 MISS | 命中 6.3 + 1.2 |
+| 8 个库内问题命中率 | 6/8 | **8/8** |
+| 库外问题幻觉防护 | 有效 | 仍然有效（0 引用） |
+
+### 8.2 作业思考题的答案（面试必考）
+
+**① 阈值过滤后剩 0 个 chunk，兜底还成立吗？**
+
+成立。`retrieve_documents` 返回空列表 → `build_context` 拼出空 context →
+`build_prompt` 里【知识库内容】为空 → prompt 规则第 3 条要求
+"如果知识库没有相关信息，只回答：知识库中没有找到相关信息。"
+实测"量子计算机原理""写诗"均返回兜底话术、0 引用。
+
+**② 3 个 chunk 全给 LLM 会不会被干扰？**
+
+会，这就是 **precision vs recall 的 trade-off**：
+- top_k 越大 → recall（召回）越高，但噪声越多，LLM 可能被不相关内容干扰；
+- top_k 越小 → precision（精确）越高，但容易漏掉真正相关的（如 FAQ 场景）。
+
+**正确做法不是二选一，而是"大 top_k + 阈值过滤"**：
+先召回 3~5 个候选（保证 recall），再用距离阈值过滤掉不相关的
+（保证 precision），只把"相关的"喂给 LLM。
+这就是 `TOP_K=3 + DISTANCE_THRESHOLD=0.95` 的组合逻辑——
+top_k 管"召回多少候选"，阈值管"放行哪些"。
+
+**③ 那为什么答案还是只有 3 个引用？**
+
+因为 `build_citations` 基于**过滤后**的 metadatas 生成，
+只有通过阈值的 chunk 才会进 context 和 citations。
+这就是"召回 3 个 → 过滤 → 只留相关的"完整链路。
+
+改完跑第 6 节的自查清单验证（本次 8/8 通过）。
+
+---
+
+## 9. D3 文档上传接口（2026-09-01 完成）——踩了 3 个坑
+
+D3 目标：新增「文档上传 / 列表 / 删除」接口，让知识库可自助扩展。
+本次共改 3 个文件 + 新增 1 个：`main.py`、`document_registry_service.py`（新增）、
+`document_service.py`、`requirements.txt`。
+
+### 9.1 坑 1：装饰器空挂 = 路由被"吃掉"（最隐蔽的 bug）
+
+**现场**：`/api/rag/query` 返回 400，报 `missing file` 字段错误——
+明明是 query 接口，却在要上传文件。
+
+**原因**（看 main.py 原始代码）：
+```python
+@app.post("/api/rag/query", response_model=RAGQueryResponse)   # ← 装饰器下面没有函数！
+@app.post("/api/rag/documents/upload")                          # ← 下一个装饰器
+async def upload_document(file: UploadFile = File(...)):        # ← 被上面两个都装饰了
+```
+
+Python 装饰器是"从下往上"应用的：`upload_document` 先被
+`/documents/upload` 装饰，**又被 `/api/rag/query` 装饰** →
+一个函数注册到两个路由，query 路由被 upload 函数接管。
+
+**教训**：装饰器必须紧贴函数定义。中间任何空行/注释都会导致
+"装饰器漂移"。这是面试可以讲的 Debug 案例——
+从"接口报错"倒推"装饰器绑定错了函数"。
+
+**修法**：query 装饰器移回 `rag_query_api` 上方，函数体紧跟。
+
+### 9.2 坑 2：注册表 JSON 结构不一致
+
+**现场**：`GET /api/rag/documents` 返回双重嵌套
+`{"documents": {"documents": [...]}}`；删除文档时遍历 dict 直接崩溃。
+
+**原因**：注册表文件结构是 `{"documents": [...]}`（dict 包 list），
+但 `get_documents()` 返回整个 dict，main.py 又包了一层 `{"documents": ...}`。
+
+**修法**：统一"读 → 返回 list"的契约：
+```python
+def get_documents() -> list[dict]:
+    """返回文档列表（不是整个 dict）"""
+    return _load_registry()   # 内部从 {"documents": [...]} 里取 list
+```
+**教训**：文件存储结构 ≠ API 返回结构 ≠ 函数返回值。
+三层各自定义清楚，用"返回 list"作为统一契约。
+
+### 9.3 坑 3：页眉检测误伤"重复正文"（回归引入 + 当场修复）
+
+**现场**：测试上传一个内容重复的 PDF，清洗后 6674 → 71 字符，
+几乎全部被删。原因是页眉检测规则是"出现 >= 8 次即页眉"，
+而重复正文每页出现 30 次，被误判成页眉。
+
+**修法**：页眉的特征不是"出现次数多"，而是"出现次数 ≈ 页数"。
+给 `detect_page_headers` 加 `page_count` 参数和**上下限**：
+```python
+lower_bound = min(min_count, max(3, page_count))   # 太少不是页眉
+upper_bound = page_count * 1.5                     # 太多是重复正文，不是页眉
+```
+**回归验证**：产品手册仍 5627 字符 / 28 chunks（页眉照删）；
+重复正文 PDF 保留 6599 字符（不再误伤）。
+
+**教训**：写过滤规则一定要想"会不会误伤正文"。
+判据要选**能区分噪声和正文的特征**（页眉=每页1次），
+而不是"看起来重复"这种模糊直觉。
+
+### 9.4 上传接口的防御（扫描版 PDF 拦截）
+
+发现用户上传的《计算机网络》PDF 是"读秀"扫描版：正文全是图片，
+只有目录页有文字。提取 3798 字符切出 208 个 chunk，全是孤立标题行。
+**这种文档入库只会制造垃圾向量。**
+
+`main.py` 上传接口加了 3 道防御：
+1. 文件类型校验（非 .pdf → 400）
+2. 重复上传校验（已存在 → 409）
+3. **文本量校验**：提取文本 < 2000 字符 → 422 拒绝
+   （扫描版/坏 PDF 的典型特征就是文本量极少）
+
+### 9.5 接口清单（D3 完成后的完整 API）
+
+| 方法 | 路径 | 功能 | 状态码 |
+|---|---|---|---|
+| POST | /api/rag/query | RAG 问答 | 200 / 503 |
+| POST | /api/rag/documents/upload | 上传 PDF 并入库 | 200 / 400 / 409 / 422 |
+| GET | /api/rag/documents | 文档列表 | 200 |
+| DELETE | /api/rag/documents/{filename} | 删除文档 | 200 / 404 |
+
+### 9.6 本次实测记录（全部真实运行）
+
+- query 修复后：`怎么填写日报？` → 正确回答 + 3 引用 ✅
+- 上传英文长 PDF → 200，13 chunks 入库 ✅
+- 重复上传 → 409 ✅
+- 假 PDF → 422（解析失败）✅
+- 短文本 PDF → 422（文本过少拦截）✅
+- 删除文档 → 200，三处数据源（Chroma/注册表/文件）同步删除 ✅
+- 删除不存在的文档 → 404 ✅
+
+**注意**：删除接口要三处都删（Chroma chunks + 注册表 + 物理文件），
+只删一处会留下"幽灵数据"（列表有但检索不到，或反过来）。

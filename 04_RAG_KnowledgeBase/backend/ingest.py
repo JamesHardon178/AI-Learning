@@ -24,10 +24,112 @@ from services.document_service import (
 )
 from services.embedding_service import embed_text
 from services import vector_service
+from services.document_registry_service import update_document,add_document,calculate_file_hash,get_documents,remove_document,get_document
 
 
 DOCUMENTS_DIR = "data/documents"
 
+
+def ingest_document(file_name: str):
+    file_path = os.path.join(DOCUMENTS_DIR, file_name)
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(
+            f"文档不存在：{file_path}"
+        )
+
+    print(f"\n===== 处理文档：{file_name} =====")
+    current_hash = calculate_file_hash(file_path)
+    registered_doc = get_document(file_name)
+    if registered_doc and registered_doc.get("file_hash") == current_hash:
+        print("文档未发生变化，跳过索引。")
+        return registered_doc["chunk_count"]
+    # 更新已有文档时，先删除旧向量
+    if registered_doc:
+        print("检测到文档已存在，准备更新旧索引")
+        vector_service.delete_document_by_source(file_name)
+
+    # 1. PDF解析 + Chunk
+    chunks = prepare_document(file_path)
+
+    print(f"切分出 {len(chunks)} 个 chunk")
+
+    # 2. Embedding
+    embeddings = []
+
+    for i, chunk in enumerate(chunks):
+        embedding = embed_text(chunk)
+        embeddings.append(embedding)
+
+        if (i + 1) % 10 == 0:
+            print(
+                f"  已向量化 {i + 1}/{len(chunks)}"
+            )
+
+    # 3. metadata
+    metadatas = [
+        {
+            "source": file_name,
+            "chunk_index": i,
+            "section": get_section_title(chunk) or "未知章节",
+            "char_count": len(chunk)
+        }
+        for i, chunk in enumerate(chunks)
+    ]
+
+    # 4. 写入 Chroma
+    doc_id = os.path.splitext(file_name)[0]
+
+    vector_service.add_documents(
+        documents=chunks,
+        embeddings=embeddings,
+        metadatas=metadatas,
+        id_prefix=doc_id
+    )
+    if registered_doc:
+        update_document(
+            filename=file_name,
+            chunk_count=len(chunks),
+            file_hash=current_hash
+        )
+    else:
+        add_document(
+            filename=file_name,
+            chunk_count=len(chunks),
+            file_hash=current_hash
+        )
+    print(
+        f"入库完成：{len(chunks)} 条"
+    )
+
+    return len(chunks)
+
+def cleanup_deleted_documents():
+    registered_documents = get_documents()
+
+    current_files = {
+        file_name
+        for file_name in os.listdir(DOCUMENTS_DIR)
+        if file_name.lower().endswith(".pdf")
+    }
+
+    for document in registered_documents:
+        filename = document["filename"]
+
+        if filename not in current_files:
+            print(
+                f"\n===== 清理已删除文档：{filename} ====="
+            )
+
+            vector_service.delete_document_by_source(
+                filename
+            )
+
+            remove_document(filename)
+
+            print(
+                f"已清理文档：{filename}"
+            )
 
 def ingest_all(dry_run: bool = False):
     """
@@ -156,13 +258,26 @@ def ingest_all(dry_run: bool = False):
             else:
                 print(f"  [MISS] {question} -> 无命中，需要检查！")
 
-
+# 此处作用：作为脚本直接运行时的入口，检测命令行参数，决定是增量入库还是清库重灌。
 if __name__ == "__main__":
-
     start = time.time()
 
-    dry_run = "--dry-run" in sys.argv
+    if "--incremental" in sys.argv:
+        print("===== 增量入库模式 =====")
 
-    ingest_all(dry_run=dry_run)
+        cleanup_deleted_documents()
 
-    print(f"\n总耗时：{time.time() - start:.1f} 秒")
+        for file_name in os.listdir(DOCUMENTS_DIR):
+            if file_name.lower().endswith(".pdf"):
+                ingest_document(file_name)
+
+    elif "--dry-run" in sys.argv:
+        ingest_all(dry_run=True)
+
+    else:
+        ingest_all(dry_run=False)
+
+    print(
+        f"\n总耗时：{time.time() - start:.1f} 秒"
+    )
+    cleanup_deleted_documents()

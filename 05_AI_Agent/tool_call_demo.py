@@ -42,75 +42,64 @@ calculate_tool = {
 }
 url = "http://127.0.0.1:11434/api/chat"
 
-payload = {
-    "model": "qwen2.5:7b-instruct",
-    "messages": [
-        {
-            "role": "user",
-            "content": "请计算 123 + 456。"
-        }
-    ],
-    "tools": [weather_tool, calculate_tool],
-    "stream": False
-}
-
-response = requests.post(
-    url,
-    json=payload,
-    timeout=(10, 300)
-)
-
-if response.status_code != 200:
-    print("状态码:", response.status_code)
-    print("错误信息:", response.text)
-
-response.raise_for_status()
-
-data = response.json()
-
-print(data)
-tool_call = data["message"]["tool_calls"][0]
-
-print("工具名称:", tool_call["function"]["name"])
-print("工具参数:", tool_call["function"]["arguments"])
-
-tool_name = tool_call["function"]["name"]
-
-tool = tool_registry[tool_name]
-
-arguments = tool_call["function"]["arguments"]
-
-result = tool(**arguments)
-
-print("工具执行结果:", result)
 messages = [
     {
         "role": "user",
         "content": "请计算 123 + 456。"
-    },
-    {
-        "role": "assistant",
-        "tool_calls": data["message"]["tool_calls"]
-    },
-    {
-        "role": "tool",
-        "content": str(result)
     }
 ]
-second_payload = {
+
+
+while True:
+    payload = {
     "model": "qwen2.5:7b-instruct",
     "messages": messages,
+    "tools": [weather_tool, calculate_tool],
     "stream": False
-}
+    }
+    response = requests.post(
+        url,
+        json=payload,
+        timeout=(10, 300)
+    )
 
-second_response = requests.post(
-    url,
-    json=second_payload,
-    timeout=(10, 300)
-)
 
-second_response.raise_for_status()
+    if response.status_code != 200:
+        print("状态码:", response.status_code)
+        print("错误信息:", response.text)
 
-second_data = second_response.json()
+    response.raise_for_status()
 
-print("最终回答:", second_data["message"]["content"])
+    data = response.json()
+
+    print(data)
+    tool_calls = data["message"].get("tool_calls")
+
+    if not tool_calls:
+        print("最终回答:", data["message"]["content"])
+        break
+
+    else:
+        for tool_call in tool_calls:
+            print("工具名称:", tool_call["function"]["name"])
+            print("工具参数:", tool_call["function"]["arguments"])
+
+            tool_name = tool_call["function"]["name"]
+
+            tool = tool_registry[tool_name]
+
+            arguments = tool_call["function"]["arguments"]
+
+            result = tool(**arguments)
+
+            print("工具执行结果:", result)
+
+            messages.append({
+                "role": "assistant",
+                "tool_calls": data["message"]["tool_calls"]
+            })
+
+            messages.append({
+                "role": "tool",
+                "content": str(result)
+            })

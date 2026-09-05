@@ -49,8 +49,10 @@ messages = [
     }
 ]
 
-
-while True:
+max_iterations = 5
+iteration = 0
+while iteration < max_iterations:
+    iteration += 1
     payload = {
     "model": "qwen2.5:7b-instruct",
     "messages": messages,
@@ -85,13 +87,35 @@ while True:
             print("工具参数:", tool_call["function"]["arguments"])
 
             tool_name = tool_call["function"]["name"]
+            tool = tool_registry.get(tool_name)
+            if tool is None:
+                result = f"工具不存在: {tool_name}"
+                print("工具执行错误:", result)
 
-            tool = tool_registry[tool_name]
-
+                messages.append({
+                "role": "tool",
+                "content": result
+            })
+                continue
             arguments = tool_call["function"]["arguments"]
 
-            result = tool(**arguments)
+            try:
+                result = tool(**arguments)
+            except Exception as e:
+                result = f"工具执行失败: {str(e)}"
+                print("工具执行错误:", result)
 
+                messages.append({
+                    "role": "assistant",
+                    "tool_calls": data["message"]["tool_calls"]
+                })
+
+                messages.append({
+                    "role": "tool",
+                    "content": result
+                })
+
+                continue
             print("工具执行结果:", result)
 
             messages.append({
@@ -103,3 +127,5 @@ while True:
                 "role": "tool",
                 "content": str(result)
             })
+else:
+    print("Agent 执行超过最大轮数，停止执行。")
